@@ -1,0 +1,14 @@
+name: gaussian_splatting
+dependencies:
+  - pytorch==2.1.0 
+  - torchvision==0.16.0 
+  - torchaudio==2.1.0 
+  - pytorch-cuda=11.8
+  - python=3.8
+
+  - plyfile=0.8.1
+  - pip=22.3.1
+  - tqdm
+  - pip:
+    - submodules/diff-gaussian-rasterization
+    - submodules/simple-knn
