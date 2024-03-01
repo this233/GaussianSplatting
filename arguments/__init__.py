@@ -44,7 +44,8 @@ class ParamGroup:
                 setattr(group, arg[0], arg[1])
         return group
 
-class ModelParams(ParamGroup): 
+# dataset
+class ModelParams(ParamGroup):   # lp stands for "loading parameters"
     def __init__(self, parser, sentinel=False):
         self.sh_degree = 3
         self._source_path = ""
@@ -61,14 +62,16 @@ class ModelParams(ParamGroup):
         g.source_path = os.path.abspath(g.source_path)
         return g
 
-class PipelineParams(ParamGroup):
+# pipe
+class PipelineParams(ParamGroup): # pp stands for "processing parameters"
     def __init__(self, parser):
         self.convert_SHs_python = False
         self.compute_cov3D_python = False
         self.debug = False
         super().__init__(parser, "Pipeline Parameters")
 
-class OptimizationParams(ParamGroup):
+# opt
+class OptimizationParams(ParamGroup): # op stands for "optimization parameters"
     def __init__(self, parser):
         self.iterations = 30_000
         self.position_lr_init = 0.00016

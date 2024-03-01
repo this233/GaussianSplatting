@@ -21,9 +21,15 @@
 
 if(NOT ASSIMP_DIR)
     set(ASSIMP_DIR "$ENV{ASSIMP_DIR}" CACHE PATH "ASSIMP root directory")
+	message("NO ASSIMP DIR " ASSIMP_DIR )
+	file(TO_CMAKE_PATH "/data/graphdeco/share/usr/local" ASSIMP_DIR)
+        set(ASSIMP_DIR "/data/graphdeco/share/usr/local" )
+	message("SETTING ASSIMP DIR " ASSIMP_DIR )
 endif()
 if(ASSIMP_DIR)
 	file(TO_CMAKE_PATH ${ASSIMP_DIR} ASSIMP_DIR)
+	file(TO_CMAKE_PATH "/data/graphdeco/share/usr/local" ASSIMP_DIR)
+	message("ASSIMP DIR " ASSIMP_DIR )
 endif()
 
 
@@ -47,6 +53,7 @@ FIND_PATH(ASSIMP_INCLUDE_DIR
 		${ASSIMP_DIR}
 		## linux
 		/usr
+		/usr/include
 		/usr/local
 		/opt/local
 		## windows
@@ -56,10 +63,9 @@ FIND_PATH(ASSIMP_INCLUDE_DIR
 	PATH_SUFFIXES include
 )
 
-message(STATUS "ABC! ${ASSIMP_INCLUDE_DIR}")
 
 FIND_LIBRARY(ASSIMP_LIBRARY
-	NAMES assimp-vc140-mt
+	NAMES assimp-vc140-mt assimp
 	PATHS
 		${ASSIMP_DIR}/${ASSIMP_SEARCH_LIB}
 		${ASSIMP_DIR}/lib
@@ -69,6 +75,7 @@ FIND_LIBRARY(ASSIMP_LIBRARY
 		/usr/local/${ASSIMP_SEARCH_LIB}
 		/opt/local/${ASSIMP_SEARCH_LIB}
 		/usr/lib
+		/usr/lib64
 		/usr/local/lib
 		/opt/local/lib
 		## windows
@@ -82,13 +89,14 @@ FIND_LIBRARY(ASSIMP_LIBRARY
 )
 set(ASSIMP_LIBRARIES ${ASSIMP_LIBRARY})
 
-message(STATUS "ABC! ${ASSIMP_LIBRARY}")
 
 if(ASSIMP_LIBRARY)
 	get_filename_component(ASSIMP_LIBRARY_DIR ${ASSIMP_LIBRARY} PATH)
-	file(GLOB ASSIMP_DYNAMIC_LIB "${ASSIMP_LIBRARY_DIR}/assimp*.dll")
-	if(NOT ASSIMP_DYNAMIC_LIB)
-		message("ASSIMP_DYNAMIC_LIB is missing... at ${ASSIMP_LIBRARY_DIR}")
+	if(WIN32)
+		file(GLOB ASSIMP_DYNAMIC_LIB "${ASSIMP_LIBRARY_DIR}/assimp*.dll")
+		if(NOT ASSIMP_DYNAMIC_LIB)
+			message("ASSIMP_DYNAMIC_LIB is missing... at ${ASSIMP_LIBRARY_DIR}")
+		endif()
 	endif()
 	set(ASSIMP_DYNAMIC_LIB ${ASSIMP_DYNAMIC_LIB} CACHE PATH "Windows dll location")
 endif()

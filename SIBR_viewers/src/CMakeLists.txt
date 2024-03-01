@@ -12,6 +12,8 @@
 # This CMakeLists.txt manages which projects should be built and add their     #
 # dependencies.                                                                #
 ################################################################################
+
+
 set(SIBR_FOLDER "core")
 set_property(GLOBAL PROPERTY PREDEFINED_TARGETS_FOLDER "")
 
@@ -29,18 +31,13 @@ MACRO(SUBDIRLIST result curdir)
   SET(${result} ${dirlist})
 ENDMACRO()
 
-list(APPEND CMAKE_PREFIX_PATH /data/liweihong/packages/usr/include/)
-list(APPEND CMAKE_PREFIX_PATH /data/liweihong/packages/usr/lib/x86_64-linux-gnu)
-
-message(STATUS "CMAKE_FIND_ROOT_PATH! ${CMAKE_FIND_ROOT_PATH}")
-message(STATUS "CMAKE_PREFIX_PATH! ${CMAKE_PREFIX_PATH}")
 set(SIBR_PROJECTS_FOLDER           "${CMAKE_CURRENT_SOURCE_DIR}/projects")
 SUBDIRLIST(SUBDIRS ${SIBR_PROJECTS_FOLDER})
 
 list(APPEND PROJECT_SUBFOLDERS "apps" "preprocess" "renderer" "scripts" "library")
 
 # Moving ulr to the top of the list
-list(PREPEND SUBDIRS "dataset_tools" "ulr")
+list(PREPEND SUBDIRS "dataset_tools" "ulr" "basic")
 list(REMOVE_DUPLICATES SUBDIRS)
 
 ## DEPS ##
@@ -88,7 +85,7 @@ if (BUILD_SIBR)
   add_subdirectory(core/video)
 endif()
 
-set(PROJECTS_ON_AT_FIRST_BUILD "dataset_tools" "ulr")
+set(PROJECTS_ON_AT_FIRST_BUILD "basic" "gaussianviewer" "remote")
 
 foreach(subdir ${SUBDIRS})
   message(STATUS "Adding ${subdir} project")

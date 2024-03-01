@@ -74,4 +74,5 @@ def fov2focal(fov, pixels):
     return pixels / (2 * math.tan(fov / 2))
 
 def focal2fov(focal, pixels):
+    # 根据相机的焦距和图像的宽/高计算视场角
     return 2*math.atan(pixels/(2*focal))

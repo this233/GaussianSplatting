@@ -7,6 +7,7 @@
 # 
 # For inquiries contact sibr@inria.fr and/or George.Drettakis@inria.fr
 
+
 macro(include_once file)
     get_filename_component(INCLUDE_ONCE_FILEPATH ${file} REALPATH)
     string(REGEX REPLACE "(\\.|\\/+|\\:|\\\\+)" "_" INCLUDE_ONCE_FILEPATH ${INCLUDE_ONCE_FILEPATH})

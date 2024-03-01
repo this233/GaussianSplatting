@@ -75,6 +75,7 @@ def strip_lowerdiag(L):
 def strip_symmetric(sym):
     return strip_lowerdiag(sym)
 
+# 将 N x 4 的旋转四元组转换成 N x 3 x 3 的旋转矩阵, N 为点云中点的个数或者3D gaussian的个数
 def build_rotation(r):
     norm = torch.sqrt(r[:,0]*r[:,0] + r[:,1]*r[:,1] + r[:,2]*r[:,2] + r[:,3]*r[:,3])
 
