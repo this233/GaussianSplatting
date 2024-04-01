@@ -38,6 +38,7 @@ if not args.skip_matching:
         --ImageReader.single_camera 1 \
         --ImageReader.camera_model " + args.camera + " \
         --SiftExtraction.use_gpu " + str(use_gpu)
+
     exit_code = os.system(feat_extracton_cmd)
     if exit_code != 0:
         logging.error(f"Feature extraction failed with code {exit_code}. Exiting.")
@@ -70,22 +71,22 @@ if not args.skip_matching:
 img_undist_cmd = (colmap_command + " image_undistorter \
     --image_path " + args.source_path + "/input \
     --input_path " + args.source_path + "/distorted/sparse/0 \
-    --output_path " + args.source_path + "\
+    --output_path " + args.source_path + "/dense \
     --output_type COLMAP")
 exit_code = os.system(img_undist_cmd)
 if exit_code != 0:
     logging.error(f"Mapper failed with code {exit_code}. Exiting.")
     exit(exit_code)
 
-files = os.listdir(args.source_path + "/sparse")
-os.makedirs(args.source_path + "/sparse/0", exist_ok=True)
+files = os.listdir(args.source_path + "/dense/sparse")
+os.makedirs(args.source_path + "/dense/sparse/0", exist_ok=True)
 # Copy each file from the source directory to the destination directory
-for file in files:
-    if file == '0':
-        continue
-    source_file = os.path.join(args.source_path, "sparse", file)
-    destination_file = os.path.join(args.source_path, "sparse", "0", file)
-    shutil.move(source_file, destination_file)
+# for file in files:
+#     if file == '0':
+#         continue
+#     source_file = os.path.join(args.source_path, "dense","sparse", file)
+#     destination_file = os.path.join(args.source_path, "dense","sparse","0", file)
+#     shutil.move(source_file, destination_file)
 
 if(args.resize):
     print("Copying and resizing...")

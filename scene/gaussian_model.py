@@ -11,15 +11,69 @@
 
 import torch
 import numpy as np
+import open3d as o3d
 from utils.general_utils import inverse_sigmoid, get_expon_lr_func, build_rotation
 from torch import nn
 import os
 from utils.system_utils import mkdir_p
 from plyfile import PlyData, PlyElement
-from utils.sh_utils import RGB2SH
+from utils.sh_utils import RGB2SH,SH2RGB
 from simple_knn._C import distCUDA2
 from utils.graphics_utils import BasicPointCloud
 from utils.general_utils import strip_symmetric, build_scaling_rotation
+
+class NeRF(nn.Module):
+    def __init__(self, D=8, W=256, input_ch=3, input_ch_views=3, output_ch=4, skips=[4], use_viewdirs=False):
+        """ 
+        """
+        super(NeRF, self).__init__()
+        self.D = D
+        self.W = W
+        self.input_ch = input_ch
+        self.input_ch_views = input_ch_views
+        self.skips = skips
+        self.use_viewdirs = use_viewdirs
+        
+        self.pts_linears = nn.ModuleList(
+            [nn.Linear(input_ch, W)] + [nn.Linear(W, W) if i not in self.skips else nn.Linear(W + input_ch, W) for i in range(D-1)])
+        self.feature_linear = nn.Linear(W, W)
+        
+        ### Implementation according to the official code release (https://github.com/bmild/nerf/blob/master/run_nerf_helpers.py#L104-L105)
+        self.views_linears = nn.ModuleList([nn.Linear(input_ch_views + W, W//2)])
+
+        
+        ### Implementation according to the paper
+        # self.views_linears = nn.ModuleList(
+        #     [nn.Linear(input_ch_views + W, W//2)] + [nn.Linear(W//2, W//2) for i in range(D//2)])
+        
+        
+        self.scale_linear = nn.Linear(W//2, 3)
+        self.rotate_linear = nn.Linear(W//2, 3)
+    
+    def forward(self, x):
+        input_pts, input_views = torch.split(x, [self.input_ch, self.input_ch_views], dim=-1)
+        h = input_pts
+        for i, l in enumerate(self.pts_linears):
+            h = self.pts_linears[i](h)
+            h = F.relu(h)
+            if i in self.skips:
+                h = torch.cat([input_pts, h], -1)
+
+        if self.use_viewdirs:
+            alpha = self.alpha_linear(h)
+            feature = self.feature_linear(h)
+            h = torch.cat([feature, input_views], -1)
+        
+            for i, l in enumerate(self.views_linears):
+                h = self.views_linears[i](h)
+                h = F.relu(h)
+
+            rgb = self.rgb_linear(h)
+            outputs = torch.cat([rgb, alpha], -1)
+        else:
+            outputs = self.output_linear(h)
+
+        return outputs  
 
 # 创建 GaussianModel 模型，给点云中的每个点去创建一个3D gaussian，
 # 每个3D gaussian都包含中心点的位置、颜色、不透明度、尺度、旋转参数。
@@ -34,6 +88,7 @@ class GaussianModel:
             L = build_scaling_rotation(scaling_modifier * scaling, rotation)
             actual_covariance = L @ L.transpose(1, 2)
             symm = strip_symmetric(actual_covariance)
+            # print(scaling.shape,rotation.shape,L.shape,symm.shape)
             return symm
         
         self.scaling_activation = torch.exp# 将尺度限制为非负数
@@ -47,7 +102,8 @@ class GaussianModel:
         self.rotation_activation = torch.nn.functional.normalize
 
 
-    def __init__(self, sh_degree : int):
+    def __init__(self, sh_degree : int,data_device="cuda"):
+        self.data_device = data_device
         self.active_sh_degree = 0#使用的球谐阶数
         self.max_sh_degree = sh_degree  #最大球谐阶数
         self._xyz = torch.empty(0)# 中心点位置, 也即3Dgaussian的均值
@@ -127,8 +183,97 @@ class GaussianModel:
         if self.active_sh_degree < self.max_sh_degree:
             self.active_sh_degree += 1
 
+    # 重置不透明度
+    def reset_opacity(self):
+        opacities_new = inverse_sigmoid(torch.min(self.get_opacity, torch.ones_like(self.get_opacity)*0.01))
+        optimizable_tensors = self.replace_tensor_to_optimizer(opacities_new, "opacity")
+        self._opacity = optimizable_tensors["opacity"]
+    
+    def downsample(self):
+        points_np = self._xyz.detach().cpu().numpy().astype(np.float64) # (P,3)
+        colors_np = SH2RGB(self._features_dc).detach().cpu().numpy().reshape(-1, 3).astype(np.float64)  # 调整颜色维度以便与点云合并P,1,3 => P,3
+
+        # 创建Open3D点云对象
+        pcd = o3d.geometry.PointCloud()
+        
+        pcd.points = o3d.utility.Vector3dVector(points_np)
+        pcd.colors = o3d.utility.Vector3dVector(colors_np)
+
+        # 进行体素网格过滤
+        voxel_size = np.linalg.norm(np.max(points_np, axis=0) - np.min(points_np, axis=0)) / 25000
+        down_pcd = pcd.voxel_down_sample(voxel_size)    
+
+        # 将下采样后的点云转换回torch.Tensor
+        downsampled_points = torch.tensor(np.asarray(down_pcd.points)).reshape(-1, 3).float().cuda()
+        downsampled_colors = RGB2SH(torch.tensor(np.asarray(down_pcd.colors).flatten()).reshape(-1,1,3).float()).cuda()
+
+        optimizable_tensors= self.replace_tensor_to_optimizer(downsampled_points, "xyz")
+        self._xyz = optimizable_tensors["xyz"]
+        
+        optimizable_tensors = self.replace_tensor_to_optimizer(downsampled_colors, "f_dc")
+        self._features_dc = optimizable_tensors["f_dc"]
+
+        return 
+        num_points =self._xyz.shape[0]
+        retain_ratio = 0.9
+        indices = torch.randperm(num_points)
+
+        # 计算要保留的点数
+        num_retain = int(num_points * retain_ratio)
+
+        # 选择要保留的索引
+        
+        selected_indices = indices[:num_retain]
+        
+        selection_mask = torch.full((num_points,), True)
+
+        # 将选中的索引位置设为True
+        selection_mask[selected_indices] = False
+
+        prune_filter = selection_mask
+        # 使用 `prune_points` 方法进行点的修剪。
+        self.prune_points(prune_filter)
+        
+    
+    def reset_all(self):
+        print("pre ",self._xyz.shape[0])
+        self.downsample()
+        print("after ",self._xyz.shape[0])    
+        
+        features_rest_new = torch.zeros((self.get_xyz.shape[0], 15, 3), device=self.data_device)
+        optimizable_tensors = self.replace_tensor_to_optimizer(features_rest_new, "f_rest")
+        self._features_rest = optimizable_tensors["f_rest"]
+        
+        opacity_new = inverse_sigmoid(0.1 * torch.ones((self.get_xyz.shape[0], 1), dtype=torch.float, device=self.data_device)) # (P, 1), 每个点的不透明度, 初始化为0.1
+        optimizable_tensors = self.replace_tensor_to_optimizer(opacity_new, "opacity")
+        self._opacity = optimizable_tensors["opacity"]
+        
+        rotation_new = torch.zeros((self.get_xyz.shape[0], 4), device=self.data_device)# (P, 4), 每个点的旋转参数, 四元组
+        rotation_new[:, 0] = 1
+        optimizable_tensors = self.replace_tensor_to_optimizer(rotation_new, "rotation")
+        self._rotation = optimizable_tensors["rotation"]
+        
+        dist2 = torch.clamp_min(distCUDA2(torch.from_numpy(np.asarray(self.get_xyz.detach().cpu())).float().cuda()), 0.0000001)# (P,)
+        scaling_new = torch.log(torch.sqrt(dist2))[...,None].repeat(1, 3) # (P, 3), 每个点在X, Y, Z方向上的尺度
+        optimizable_tensors = self.replace_tensor_to_optimizer(scaling_new, "scaling")
+        self._scaling = optimizable_tensors["scaling"]
+        
+        self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0],1), device=self.data_device)# (P,)
+
+        self.denom = torch.zeros((self.get_xyz.shape[0],1), device=self.data_device)# (P,)
+        
+        # {'params': [self._xyz], 'lr': training_args.position_lr_init * self.spatial_lr_scale, "name": "xyz"},
+        # {'params': [self._features_dc], 'lr': training_args.feature_lr, "name": "f_dc"},
+        # {'params': [self._features_rest], 'lr': training_args.feature_lr / 20.0, "name": "f_rest"},
+        # {'params': [self._opacity], 'lr': training_args.opacity_lr, "name": "opacity"},
+        # {'params': [self._scaling], 'lr': training_args.scaling_lr, "name": "scaling"},
+        # {'params': [self._rotation], 'lr': training_args.rotation_lr, "name": "rotation"}
+        
+        self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device=self.data_device)# (P,)
+
     def create_from_pcd(self, pcd : BasicPointCloud, spatial_lr_scale : float):
         self.spatial_lr_scale = spatial_lr_scale
+        print(pcd.points.shape,type(pcd.points))
         fused_point_cloud = torch.tensor(np.asarray(pcd.points)).float().cuda()# (P, 3)
         fused_color = RGB2SH(torch.tensor(np.asarray(pcd.colors)).float().cuda())# (P, 3), 将RGB转换成球谐系数, C0项的系数
         features = torch.zeros((fused_color.shape[0], 3, (self.max_sh_degree + 1) ** 2)).float().cuda()# (P, 3, 16), 每个颜色通道有16个球谐系数
@@ -140,10 +285,10 @@ class GaussianModel:
         # distCUDA2 计算点云中的每个点到与其最近的K个点的平均距离的平方
         dist2 = torch.clamp_min(distCUDA2(torch.from_numpy(np.asarray(pcd.points)).float().cuda()), 0.0000001)# (P,)
         scales = torch.log(torch.sqrt(dist2))[...,None].repeat(1, 3) # (P, 3), 每个点在X, Y, Z方向上的尺度
-        rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")# (P, 4), 每个点的旋转参数, 四元组
+        rots = torch.zeros((fused_point_cloud.shape[0], 4), device=self.data_device)# (P, 4), 每个点的旋转参数, 四元组
         rots[:, 0] = 1
 
-        opacities = inverse_sigmoid(0.1 * torch.ones((fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda")) # (P, 1), 每个点的不透明度, 初始化为0.1
+        opacities = inverse_sigmoid(0.1 * torch.ones((fused_point_cloud.shape[0], 1), dtype=torch.float, device=self.data_device)) # (P, 1), 每个点的不透明度, 初始化为0.1
 
         self._xyz = nn.Parameter(fused_point_cloud.requires_grad_(True)) # (P, 3)
         self._features_dc = nn.Parameter(features[:,:,0:1].transpose(1, 2).contiguous().requires_grad_(True))# (P, 1, 3)
@@ -151,13 +296,13 @@ class GaussianModel:
         self._scaling = nn.Parameter(scales.requires_grad_(True))# (P, 3)
         self._rotation = nn.Parameter(rots.requires_grad_(True)) # (P, 4)
         self._opacity = nn.Parameter(opacities.requires_grad_(True))# (P, 1)
-        self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")# (P,)
-
+        self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device=self.data_device)# (P,)
+        
     def training_setup(self, training_args):
         self.percent_dense = training_args.percent_dense # 0.01
         # 存储每个3D gaussian的均值xyz的梯度, 用于判断是否对该3D gaussian进行克隆或者
-        self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")# (P, 1)
-        self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")# (P, 1)
+        self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device=self.data_device)# (P, 1)
+        self.denom = torch.zeros((self.get_xyz.shape[0], 1), device=self.data_device)# (P, 1)
 
         l = [
             {'params': [self._xyz], 'lr': training_args.position_lr_init * self.spatial_lr_scale, "name": "xyz"},
@@ -218,11 +363,7 @@ class GaussianModel:
         el = PlyElement.describe(elements, 'vertex')
         PlyData([el]).write(path)
 
-    # 重置不透明度
-    def reset_opacity(self):
-        opacities_new = inverse_sigmoid(torch.min(self.get_opacity, torch.ones_like(self.get_opacity)*0.01))
-        optimizable_tensors = self.replace_tensor_to_optimizer(opacities_new, "opacity")
-        self._opacity = optimizable_tensors["opacity"]
+    
 
     def load_ply(self, path):
         plydata = PlyData.read(path)
@@ -258,13 +399,13 @@ class GaussianModel:
         for idx, attr_name in enumerate(rot_names):
             rots[:, idx] = np.asarray(plydata.elements[0][attr_name])
 
-        self._xyz = nn.Parameter(torch.tensor(xyz, dtype=torch.float, device="cuda").requires_grad_(True))
-        self._features_dc = nn.Parameter(torch.tensor(features_dc, dtype=torch.float, device="cuda").transpose(1, 2).contiguous().requires_grad_(True))
-        self._features_rest = nn.Parameter(torch.tensor(features_extra, dtype=torch.float, device="cuda").transpose(1, 2).contiguous().requires_grad_(True))
-        self._opacity = nn.Parameter(torch.tensor(opacities, dtype=torch.float, device="cuda").requires_grad_(True))
-        self._scaling = nn.Parameter(torch.tensor(scales, dtype=torch.float, device="cuda").requires_grad_(True))
-        self._rotation = nn.Parameter(torch.tensor(rots, dtype=torch.float, device="cuda").requires_grad_(True))
-
+        self._xyz = nn.Parameter(torch.tensor(xyz, dtype=torch.float, device=self.data_device).requires_grad_(True))
+        self._features_dc = nn.Parameter(torch.tensor(features_dc, dtype=torch.float, device=self.data_device).transpose(1, 2).contiguous().requires_grad_(True))
+        self._features_rest = nn.Parameter(torch.tensor(features_extra, dtype=torch.float, device=self.data_device).transpose(1, 2).contiguous().requires_grad_(True))
+        self._opacity = nn.Parameter(torch.tensor(opacities, dtype=torch.float, device=self.data_device).requires_grad_(True))
+        self._scaling = nn.Parameter(torch.tensor(scales, dtype=torch.float, device=self.data_device).requires_grad_(True))
+        self._rotation = nn.Parameter(torch.tensor(rots, dtype=torch.float, device=self.data_device).requires_grad_(True))
+        
         self.active_sh_degree = self.max_sh_degree
 
     # 重置不透明度
@@ -357,21 +498,23 @@ class GaussianModel:
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
 
-        self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
-        self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
-        self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
+        self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device=self.data_device)
+        self.denom = torch.zeros((self.get_xyz.shape[0], 1), device=self.data_device)
+        self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device=self.data_device)
 
     # 对于那些均值的梯度超过一定阈值且尺度大于一定阈值的3D gaussian进行分割操作
     # 这个函数的主要目的是在满足梯度条件的情况下对点进行稠密化和分割操作，以增加点的数量并改善点云的表示。
     
     def densify_and_split(self, grads, grad_threshold, scene_extent, N=2):    
         # 获取初始点数 `n_init_points`。
+        # with open('/data/liweihong/code/gaussian-splatting/gpu_memory_usage.log', 'a') as file:
+        #     file.write(f"{grads.shape},{self.get_xyz.shape}\n")
         n_init_points = self.get_xyz.shape[0]
         
         # Extract points that satisfy the gradient condition
         # 创建布尔掩码 `selected_pts_mask`，将满足梯度条件且缩放值大于 `percent_dense * scene_extent` 的点选中。
-        padded_grad = torch.zeros((n_init_points), device="cuda")
-        padded_grad[:grads.shape[0]] = grads.squeeze()
+        padded_grad = torch.zeros((n_init_points), device=self.data_device)  # 包括本次克隆过的点
+        padded_grad[:grads.shape[0]] = grads.squeeze()  # 不包括本次克隆过的点
         selected_pts_mask = torch.where(padded_grad >= grad_threshold, True, False)
         selected_pts_mask = torch.logical_and(selected_pts_mask,
                                               torch.max(self.get_scaling, dim=1).values > self.percent_dense*scene_extent)
@@ -379,7 +522,7 @@ class GaussianModel:
         # 为满足条件的点创建分割坐标和属性，并将它们重复 `N` 次，形成 `N` 个分割点集。
         # 计算分割点的缩放值、旋转值和其他属性。
         stds = self.get_scaling[selected_pts_mask].repeat(N,1)
-        means =torch.zeros((stds.size(0), 3),device="cuda")
+        means =torch.zeros((stds.size(0), 3),device=self.data_device)
         samples = torch.normal(mean=means, std=stds)
         rots = build_rotation(self._rotation[selected_pts_mask]).repeat(N,1,1)
         
@@ -398,7 +541,7 @@ class GaussianModel:
 
         # 将原来的那些均值的梯度超过一定阈值且尺度大于一定阈值的3D gaussian进行删除 (因为已经将它们分割成了两个新的3D gaussian，原先的不再需要了)
         # 创建布尔掩码 `prune_filter`，其中包括选中的点和新生成的分割点。
-        prune_filter = torch.cat((selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)))
+        prune_filter = torch.cat((selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device=self.data_device, dtype=bool)))
         # 使用 `prune_points` 方法进行点的修剪。
         self.prune_points(prune_filter)
 
@@ -436,5 +579,6 @@ class GaussianModel:
         torch.cuda.empty_cache()
 
     def add_densification_stats(self, viewspace_point_tensor, update_filter):
+        # print(viewspace_point_tensor.shape,update_filter.shape)
         self.xyz_gradient_accum[update_filter] += torch.norm(viewspace_point_tensor.grad[update_filter,:2], dim=-1, keepdim=True)
         self.denom[update_filter] += 1

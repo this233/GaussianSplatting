@@ -1,0 +1,10 @@
+--2024-03-15 14:14:27--  https://drive.usercontent.google.com/download?id=1C3PS6tCZFpF_YEC_1ZJllSvwksJP6qZ_
+Connecting to 127.0.0.1:7890... connected.
+Proxy request sent, awaiting response... 200 OK
+Length: 2379 (2.3K) [text/html]
+Saving to: ‘download?id=1C3PS6tCZFpF_YEC_1ZJllSvwksJP6qZ_’
+
+                 download?id=1C3P   0%[                                                            ]       0  --.-KB/s               download?id=1C3PS6tCZFpF_YEC_1ZJl 100%[===========================================================>]   2.32K  --.-KB/s    in 0s      
+
+2024-03-15 14:14:28 (10.5 MB/s) - ‘download?id=1C3PS6tCZFpF_YEC_1ZJllSvwksJP6qZ_’ saved [2379/2379]
+
